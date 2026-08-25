@@ -1,0 +1,12 @@
+{
+  "name": "turncraft-chatbot-conversation-designer",
+  "private": true,
+  "type": "module",
+  "description": "Turncraft: AI-powered chatbot conversation design tool. Standalone web app (Netlify static site + one serverless function proxying the Anthropic API).",
+  "scripts": {
+    "dev": "netlify dev"
+  },
+  "dependencies": {
+    "@netlify/blobs": "^8.0.0"
+  }
+}
