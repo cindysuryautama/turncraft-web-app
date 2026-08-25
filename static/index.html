@@ -540,7 +540,7 @@ const S = {
   showExportPanel: false,
   exportFormat: 'html',           // 'html' | 'jsonl'
   exportScope: 'selected',        // 'selected' | 'all'
-  exportSections: { conversation: true, spec: true, map: false, rules: false },
+  exportSections: { conversation: true, spec: true, map: false },
   savingSession: false,
 };
 
@@ -2488,7 +2488,7 @@ function renderExportPanel() {
 
   // HTML mode options
   const needsScope = !isJSONL && (sec.conversation || sec.spec);
-  const nothingChecked = !isJSONL && !sec.conversation && !sec.spec && !sec.map && !sec.rules;
+  const nothingChecked = !isJSONL && !sec.conversation && !sec.spec && !sec.map;
   const noSelWarning = needsScope && scope === 'selected' && !sel;
   const canExport = isJSONL ? S.scenarios.length > 0 : (!nothingChecked && !noSelWarning);
 
@@ -2502,9 +2502,8 @@ function renderExportPanel() {
   const htmlOptions = !isJSONL ? (() => {
     const checks = [
       { key: 'conversation', label: 'Conversations',  desc: 'The full bot–user exchange for each scenario, including UI components.' },
-      { key: 'spec',         label: 'Prompt specs',   desc: 'Trigger condition, persona, behaviour steps, and guardrails per scenario.' },
+      { key: 'spec',         label: 'Prompt specs',   desc: 'Trigger condition, persona, behaviour steps, tweaks, and guardrail hits per scenario.' },
       { key: 'map',          label: 'Scenario map',   desc: 'All scenarios as a table — ID, category, and trigger condition.' },
-      { key: 'rules',        label: 'Learned from tweaks', desc: 'Rules the tool extracted from your tweaks.' },
     ];
     const checksHTML = checks.map(c =>
       '<div class="export-check-row" data-action="toggle-export-section" data-key="'+c.key+'">'
@@ -2634,6 +2633,10 @@ function loadState() {
     // the rule was saved" rule this feature is meant to enforce.
     if (!S.generatedConvoRules) S.generatedConvoRules = {};
     if (!S.convoRuleHistory) S.convoRuleHistory = {};
+    // Same migration, for session files saved before this field was included in the
+    // "Save session" download (see the save-session handler) — without this, per-scenario
+    // tweaks applied before that fix would load back in as undefined instead of just empty.
+    if (!S.scenarioRules) S.scenarioRules = {};
     // Materials already in saved state — mark domain as initialised so initDomain() skips re-init
     S.domainInitialized = (S.onbDomain || 'Crypto / Fintech').trim();
     // Re-parse any materials that weren't fully parsed (e.g. mid-session refresh)
@@ -2646,7 +2649,7 @@ function loadState() {
 // EXPORT — build self-contained HTML file for download
 // ═══════════════════════════════════════════════════════════════
 function buildExportHTML(scope, sections) {
-  sections = sections || { conversation: true, spec: true, map: false, rules: false };
+  sections = sections || { conversation: true, spec: true, map: false };
   scope = scope || 'selected';
   const sel = S.selectedScenario;
   const personaName = (S.personaNames && S.personaNames[S.persona]) || S.persona;
@@ -2744,44 +2747,27 @@ function buildExportHTML(scope, sections) {
       // currently sitting in the designer's rule lists.
       const key = scenario.id + '-' + S.persona;
       const rulesSnap = S.generatedConvoRules && S.generatedConvoRules[key];
-      const designerRules = rulesSnap ? [...(rulesSnap.global || []), ...(rulesSnap.scenario || [])] : [];
+      const tweaks = rulesSnap ? [...(rulesSnap.global || []), ...(rulesSnap.scenario || [])] : [];
       // Guardrail hits: which turns Layer A actually self-reported a decline/redirect on,
       // read straight from this scenario's own turns (not the snapshot), so hits still show
-      // even for scenarios generated before the rules-snapshot feature existed.
+      // even for scenarios generated before the rules-snapshot feature existed. This is the
+      // ONLY thing GUARDRAILS reports now — designer tweaks live in their own row above it.
       const hitEntries = (turns || [])
         .map((t, i) => ({ t, i }))
         .filter(({ t }) => t.type === 'bot' && t.guardrailHit);
-      // SECURITY row: a scenario-level summary of what the guardrails engine actually did
-      // for this specific generation — Layer B's free regex result plus however many turns
-      // Layer A self-reported a hit on (see the GUARDRAILS row below for exactly which).
-      // Snapshot-based, so it reflects this generation, not live state. Omitted entirely
-      // for scenarios generated before this feature existed (no snapshot).
-      const securityLine = !rulesSnap ? null
-        : !rulesSnap.guardrailsOn ? 'Guardrails were off for this generation'
-        : `Layer B: ${rulesSnap.layerBFlagged ? 'pattern flagged' : 'no pattern match'} · Layer A: ${
-            hitEntries.length > 0 ? hitEntries.map(({t}) => esc2(t.guardrailHit)).join('; ') : 'no hits reported'
-          }`;
-      // GUARDRAILS row: everything that actually governed this generation, in one place —
-      // designer rules learned from tweaks (scoped to when they were applied, per the
-      // snapshot note above) AND the specific turns where Layer A self-reported a hit.
-      // Hits used to render as small badges inline in the conversation transcript below;
-      // moved here so the transcript reads as a clean conversation and every
-      // guardrails-related fact lives under one heading instead of being split across
-      // the transcript and this spec block.
-      const guardrailItems = [
-        ...designerRules.map(r => ({ text: r, hit: false })),
-        ...hitEntries.map(({ t, i }) => ({ text: `Turn ${i + 1}: ${t.guardrailHit}`, hit: true })),
-      ];
       out += `<div class="spec-block">
         <div class="spec-row"><span class="spec-k">TRIGGER</span><span>${esc2(scenario.condition)}</span></div>
         <div class="spec-row"><span class="spec-k">PERSONA</span><span>${esc2(personaText || personaName)}</span></div>
         ${behaviourSteps.length > 0
           ? `<div class="spec-row"><span class="spec-k">BEHAVIOUR</span><ol class="spec-ol">${behaviourSteps.map(s => `<li>${esc2(s)}</li>`).join('')}</ol></div>`
           : ''}
-        ${securityLine ? `<div class="spec-row"><span class="spec-k">SECURITY</span><span>${securityLine}</span></div>` : ''}
-        <div class="spec-row"><span class="spec-k">GUARDRAILS</span>${guardrailItems.length > 0
-          ? `<ul class="spec-ul">${guardrailItems.map(g => `<li class="${g.hit ? 'spec-guardrail-hit' : ''}">${g.hit ? '🛡 ' : ''}${esc2(g.text)}</li>`).join('')}</ul>`
-          : `<span class="spec-placeholder">None for this generation — hits appear automatically, or use the tweak field to add a designer rule</span>`
+        <div class="spec-row"><span class="spec-k">TWEAKS</span>${tweaks.length > 0
+          ? `<ul class="spec-ul">${tweaks.map(r => `<li>${esc2(r)}</li>`).join('')}</ul>`
+          : `<span class="spec-placeholder">No tweaks applied for this scenario — use the tweak field to add one</span>`
+        }</div>
+        <div class="spec-row"><span class="spec-k">GUARDRAILS</span>${hitEntries.length > 0
+          ? `<ul class="spec-ul">${hitEntries.map(({t, i}) => `<li class="spec-guardrail-hit">🛡 Turn ${i + 1}: ${esc2(t.guardrailHit)}</li>`).join('')}</ul>`
+          : `<span class="spec-placeholder">No guardrail hits apply for this scenario</span>`
         }</div>
       </div>`;
     }
@@ -2859,13 +2845,6 @@ function buildExportHTML(scope, sections) {
     }
   }
 
-  // Design rules
-  if (sections.rules && S.learnedRules && S.learnedRules.length > 0) {
-    hasContent = true;
-    body += `<section><h2>Learned from tweaks</h2><ul class="spec-ul">`;
-    S.learnedRules.forEach(r => { body += `<li>${esc2(r)}</li>`; });
-    body += `</ul></section>`;
-  }
 
   if (!hasContent) {
     body += `<p style="color:#888;padding:32px 0">No content to export for this selection.</p>`;
@@ -3774,11 +3753,23 @@ function handleAction(action, data={}) {
           intent: S.intent, submittedIntent: S.submittedIntent,
           scenarios: S.scenarios, selectedScenario: S.selectedScenario,
           persona: S.persona, personaOpen: S.personaOpen,
+          domainPersonas: S.domainPersonas,
           generatedConvos: S.generatedConvos,
+          convoHistory: S.convoHistory,
+          convoHistoryIdx: S.convoHistoryIdx,
+          // Previously missing from this snapshot entirely — meant per-scenario tweaks
+          // (scenarioRules) and the rules/hits actually captured at generation time
+          // (generatedConvoRules, which the export's TWEAKS/GUARDRAILS rows read from)
+          // silently disappeared the moment someone saved a session and loaded it back,
+          // even though the same data survives fine through the auto-save in saveState().
+          generatedConvoRules: S.generatedConvoRules,
+          convoRuleHistory: S.convoRuleHistory,
           learnedRules: S.learnedRules,
+          scenarioRules: S.scenarioRules || {},
           coverageDismissed: S.coverageDismissed,
           personaTexts: S.personaTexts, personaNames: S.personaNames,
           exportScope: S.exportScope, exportSections: S.exportSections,
+          guardrailsEnabled: S.guardrailsEnabled, guardrailsMaterial: S.guardrailsMaterial,
           savedAt: new Date().toISOString(),
         };
         const blob = new Blob([JSON.stringify(snapshot, null, 2)], { type: 'application/json' });
@@ -3805,7 +3796,7 @@ function handleAction(action, data={}) {
       break;
 
     case 'toggle-export-section':
-      if (!S.exportSections) S.exportSections = { conversation: true, spec: true, map: false, rules: false };
+      if (!S.exportSections) S.exportSections = { conversation: true, spec: true, map: false };
       S.exportSections[data.key] = !S.exportSections[data.key];
       render();
       break;
