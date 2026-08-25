@@ -2744,18 +2744,34 @@ function buildExportHTML(scope, sections) {
       // currently sitting in the designer's rule lists.
       const key = scenario.id + '-' + S.persona;
       const rulesSnap = S.generatedConvoRules && S.generatedConvoRules[key];
-      const guardrails = rulesSnap ? [...(rulesSnap.global || []), ...(rulesSnap.scenario || [])] : [];
+      const designerRules = rulesSnap ? [...(rulesSnap.global || []), ...(rulesSnap.scenario || [])] : [];
+      // Guardrail hits: which turns Layer A actually self-reported a decline/redirect on,
+      // read straight from this scenario's own turns (not the snapshot), so hits still show
+      // even for scenarios generated before the rules-snapshot feature existed.
+      const hitEntries = (turns || [])
+        .map((t, i) => ({ t, i }))
+        .filter(({ t }) => t.type === 'bot' && t.guardrailHit);
       // SECURITY row: a scenario-level summary of what the guardrails engine actually did
       // for this specific generation — Layer B's free regex result plus however many turns
-      // Layer A self-reported a hit on (see the per-turn badges below for exactly where).
-      // Snapshot-based like GUARDRAILS above, so it reflects this generation, not live state.
-      // Omitted entirely for scenarios generated before this feature existed (no snapshot).
-      const hitTurns = (turns || []).filter(t => t.type === 'bot' && t.guardrailHit);
+      // Layer A self-reported a hit on (see the GUARDRAILS row below for exactly which).
+      // Snapshot-based, so it reflects this generation, not live state. Omitted entirely
+      // for scenarios generated before this feature existed (no snapshot).
       const securityLine = !rulesSnap ? null
         : !rulesSnap.guardrailsOn ? 'Guardrails were off for this generation'
         : `Layer B: ${rulesSnap.layerBFlagged ? 'pattern flagged' : 'no pattern match'} · Layer A: ${
-            hitTurns.length > 0 ? hitTurns.map(t => esc2(t.guardrailHit)).join('; ') : 'no hits reported'
+            hitEntries.length > 0 ? hitEntries.map(({t}) => esc2(t.guardrailHit)).join('; ') : 'no hits reported'
           }`;
+      // GUARDRAILS row: everything that actually governed this generation, in one place —
+      // designer rules learned from tweaks (scoped to when they were applied, per the
+      // snapshot note above) AND the specific turns where Layer A self-reported a hit.
+      // Hits used to render as small badges inline in the conversation transcript below;
+      // moved here so the transcript reads as a clean conversation and every
+      // guardrails-related fact lives under one heading instead of being split across
+      // the transcript and this spec block.
+      const guardrailItems = [
+        ...designerRules.map(r => ({ text: r, hit: false })),
+        ...hitEntries.map(({ t, i }) => ({ text: `Turn ${i + 1}: ${t.guardrailHit}`, hit: true })),
+      ];
       out += `<div class="spec-block">
         <div class="spec-row"><span class="spec-k">TRIGGER</span><span>${esc2(scenario.condition)}</span></div>
         <div class="spec-row"><span class="spec-k">PERSONA</span><span>${esc2(personaText || personaName)}</span></div>
@@ -2763,9 +2779,9 @@ function buildExportHTML(scope, sections) {
           ? `<div class="spec-row"><span class="spec-k">BEHAVIOUR</span><ol class="spec-ol">${behaviourSteps.map(s => `<li>${esc2(s)}</li>`).join('')}</ol></div>`
           : ''}
         ${securityLine ? `<div class="spec-row"><span class="spec-k">SECURITY</span><span>${securityLine}</span></div>` : ''}
-        <div class="spec-row"><span class="spec-k">GUARDRAILS</span>${guardrails.length > 0
-          ? `<ul class="spec-ul">${guardrails.map(r => `<li>${esc2(r)}</li>`).join('')}</ul>`
-          : `<span class="spec-placeholder">None captured — use the tweak field to add guardrails</span>`
+        <div class="spec-row"><span class="spec-k">GUARDRAILS</span>${guardrailItems.length > 0
+          ? `<ul class="spec-ul">${guardrailItems.map(g => `<li class="${g.hit ? 'spec-guardrail-hit' : ''}">${g.hit ? '🛡 ' : ''}${esc2(g.text)}</li>`).join('')}</ul>`
+          : `<span class="spec-placeholder">None for this generation — hits appear automatically, or use the tweak field to add a designer rule</span>`
         }</div>
       </div>`;
     }
@@ -2783,9 +2799,6 @@ function buildExportHTML(scope, sections) {
             if (t.component2) out += renderCompExport(t.component2);
             if (t.quickReplies && t.quickReplies.length) {
               out += `<div class="qr-row">${t.quickReplies.map(q => `<span class="qr">${esc2(q)}</span>`).join('')}</div>`;
-            }
-            if (t.guardrailHit) {
-              out += `<div class="guardrail-badge">🛡 ${esc2(t.guardrailHit)}</div>`;
             }
             out += `</div>`;
           }
@@ -2886,6 +2899,7 @@ td{padding:9px 12px 9px 0;border-bottom:1px solid #F4F4F0;vertical-align:top}
 .spec-k{font-family:monospace;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:#D4A017;width:90px;flex-shrink:0;padding-top:3px}
 .spec-ol,.spec-ul{padding-left:18px;display:flex;flex-direction:column;gap:5px;font-size:13px;color:#1A1A1A}
 .spec-placeholder{color:#8A8A86;font-style:italic;font-size:12px}
+.spec-guardrail-hit{color:#92400E;font-weight:600}
 /* Conversation */
 .conv-wrap{display:flex;flex-direction:column;gap:10px;padding:16px;background:#F4F4F0;border-radius:8px}
 .no-conv{font-size:12px;color:#8A8A86;font-style:italic;padding:8px 0}
@@ -2897,7 +2911,6 @@ td{padding:9px 12px 9px 0;border-bottom:1px solid #F4F4F0;vertical-align:top}
 .user-bubble{background:#1A1A1A;color:#fff}
 .qr-row{display:flex;flex-wrap:wrap;gap:5px;padding:2px 0}
 .qr{padding:4px 10px;border-radius:999px;border:1px solid #EBEBE8;font-size:11px;color:#4A4A4A;background:#fff}
-.guardrail-badge{margin-top:2px;padding:3px 9px;border-radius:999px;border:1px solid #FED7AA;background:#FFF7ED;color:#92400E;font-size:10px;font-weight:600;align-self:flex-start}
 /* Metric card */
 .xc-metric{background:#fff;border:1px solid #EBEBE8;border-radius:10px;padding:12px 14px;max-width:200px;display:flex;flex-direction:column;gap:5px}
 .xc-metric-label{font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:#8A8A86;font-family:monospace}
