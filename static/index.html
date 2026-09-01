@@ -132,7 +132,7 @@ body{font-family:var(--font-sans);background:var(--bg);color:var(--fg);height:10
 
 /* Step 2 */
 .step2-wrap{flex:1;overflow-y:auto;padding:24px;display:flex;flex-direction:column;gap:16px;min-height:0}
-.step2-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}
+.step2-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;position:sticky;top:0;z-index:5;background:var(--bg);padding-bottom:6px}
 .step2-heading{font-size:16px;font-weight:600;letter-spacing:-0.01em}
 .step2-sub{font-size:12px;color:var(--fg-3);margin-top:3px}
 .scenario-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
@@ -469,7 +469,7 @@ body{font-family:var(--font-sans);background:var(--bg);color:var(--fg);height:10
 .mat-preview-block{margin:0 14px 12px;font-size:10.5px;color:var(--fg-3);font-family:var(--font-mono);line-height:1.6;background:var(--surface);border:1px solid var(--border);border-radius:var(--r-sm);padding:10px 12px;white-space:pre-wrap;word-break:break-word;max-height:200px;overflow-y:auto}
 
 /* Sidebar footer zone */
-.sidebar-footer{border-top:1px solid var(--border);padding:16px;display:flex;flex-direction:column;gap:12px;background:var(--surface);flex-shrink:0}
+.sidebar-footer{border-top:1px solid var(--border);padding:16px 16px 56px;display:flex;flex-direction:column;gap:12px;background:var(--surface);flex-shrink:0}
 .sidebar-footer-row{display:flex;gap:6px}
 .btn-footer-primary{flex:1;background:var(--fg);color:var(--bg);border:none;padding:7px 10px;border-radius:var(--r-sm);font-size:11.5px;font-weight:500;font-family:var(--font-sans);cursor:pointer;transition:background var(--dur) var(--ease);white-space:nowrap}
 .btn-footer-primary:hover{background:#333}
@@ -616,6 +616,20 @@ function normalizeUIConstraints(raw, base) {
     out[k] = (typeof v === 'number' && isFinite(v) && v > 0) ? v : fallback[k];
   });
   return out;
+}
+
+// Strips a redundant leading category prefix from a scenario label, e.g.
+// "Happy path: recommendation with quick purchase" -> "recommendation with
+// quick purchase". The category already renders as its own dropdown pill
+// next to the label field, so repeating it inside the label text is noise —
+// this runs on freshly generated scenarios and, as a migration, on scenarios
+// loaded from a saved session that predates this rule.
+function stripCategoryPrefix(label, category) {
+  if (!label || !category) return label;
+  const escaped = category.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp('^\\s*' + escaped + '\\s*[:\\-–—]\\s*', 'i');
+  const stripped = label.replace(re, '').trim();
+  return stripped || label;
 }
 
 // Shallow-merges a partial object onto a base constraints object — only fields
@@ -1036,7 +1050,7 @@ ${constraintsBlock}
 IMPORTANT: Return ONLY a valid JSON array. No markdown, no explanation. Each object must have exactly:
 {
   "id": "S1",
-  "label": "Short outcome label (3–6 words)",
+  "label": "Short outcome label (3–6 words). Do NOT prefix it with the category/type (e.g. 'Happy path:', 'Error state:') — that's already captured in the category field below and shown separately in the UI.",
   "category": "Happy path" OR "Error state" OR "Edge case" OR "Empty state",
   "condition": "IF [brief system/user state description]",
   "uiConstraints": {"minTurns":n,"maxTurns":n,"maxBubblesPerTurn":n,"maxCharsPerBubble":n,"maxQuickReplies":n}
@@ -1066,7 +1080,10 @@ Return 5–9 scenarios as a JSON array. Raw JSON only.`;
       // the full prompt asks the model to resolve it directly; the lean retry prompt
       // doesn't mention it at all, so every scenario from that path just gets the
       // resolved default.
-      scenarios.forEach(s => { s.uiConstraints = normalizeUIConstraints(s.uiConstraints, constraintCandidates.default); });
+      scenarios.forEach(s => {
+        s.uiConstraints = normalizeUIConstraints(s.uiConstraints, constraintCandidates.default);
+        s.label = stripCategoryPrefix(s.label, s.category);
+      });
       S.scenarios = scenarios;
       S.submittedIntent = intent;
       S.selectedScenario = null;
@@ -2448,12 +2465,12 @@ function renderMaterials() {
       + '</div>';
 
     if (!gm) {
-      return '<div><div class="sec-label" style="padding:0 4px;margin-bottom:8px">Security guardrails</div>'
+      return '<div><div class="sec-label" style="padding:0 4px;margin-bottom:8px;margin-top:18px">Security guardrails</div>'
         + toggleRow
         + '<div class="mat-card-list"><div class="mat-card" style="padding:14px;font-size:12px;color:var(--fg-3)">Loading…</div></div></div>';
     }
     if (S.showGuardrailsReplace) {
-      return '<div><div class="sec-label" style="padding:0 4px;margin-bottom:8px">Security guardrails</div>'
+      return '<div><div class="sec-label" style="padding:0 4px;margin-bottom:8px;margin-top:18px">Security guardrails</div>'
         + toggleRow
         + '<div class="mat-card">'
         + '<div class="mat-replace-form" style="border-radius:var(--r-md);border:none">'
@@ -2473,7 +2490,7 @@ function renderMaterials() {
     const excerpt = getMaterialDescription(gm);
     const excerptTrimmed = excerpt.length > 90 ? excerpt.slice(0, 90).replace(/\s+\S*$/, '') + '…' : excerpt;
     const statusBadge = gm.isDefault ? '<span class="mat-badge badge-ready">Default</span>' : '<span class="mat-badge badge-custom">Custom</span>';
-    return '<div><div class="sec-label" style="padding:0 4px;margin-bottom:8px">Security guardrails</div>'
+    return '<div><div class="sec-label" style="padding:0 4px;margin-bottom:8px;margin-top:18px">Security guardrails</div>'
       + toggleRow
       + '<div class="mat-card-list"><div class="mat-card">'
       + '<div class="mat-card-body">'
@@ -2836,6 +2853,11 @@ function loadState() {
     // the rule was saved" rule this feature is meant to enforce.
     if (!S.generatedConvoRules) S.generatedConvoRules = {};
     if (!S.convoRuleHistory) S.convoRuleHistory = {};
+    // Migration: strip redundant category prefixes from scenario labels generated
+    // before this rule existed (e.g. "Happy path: recommendation with quick purchase").
+    if (Array.isArray(S.scenarios)) {
+      S.scenarios.forEach(s => { s.label = stripCategoryPrefix(s.label, s.category); });
+    }
     // Materials already in saved state — mark domain as initialised so initDomain() skips re-init
     S.domainInitialized = (S.onbDomain || 'Crypto / Fintech').trim();
     // Re-parse any materials that weren't fully parsed (e.g. mid-session refresh)
