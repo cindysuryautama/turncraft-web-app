@@ -578,6 +578,7 @@ S.domainIntents  = null;   // null = not yet generated
 S.domainPersonas = null;   // null = not yet generated
 S.domainLoading  = false;
 S.domainCallFor  = null;   // staleness token — tracks which domain the in-flight intent generation is for
+S.personaCallFor = null;   // staleness token (domain+intent) — tracks which submitted intent the in-flight persona generation is for
 
 // ═══════════════════════════════════════════════════════════════
 // EMBEDDED TRAINING MATERIALS (used in prompts)
@@ -1086,6 +1087,9 @@ Return 5–9 scenarios as a JSON array. Raw JSON only.`;
       });
       S.scenarios = scenarios;
       S.submittedIntent = intent;
+      // Fire and forget — personas aren't needed until step 3, so this resolves in the
+      // background while the user is still reviewing/editing scenarios at step 2.
+      generatePersonas(S.onbDomain, intent);
       S.selectedScenario = null;
       S.coverageDismissed = false;
       // Clear all cached conversations — new scenarios have new conditions,
@@ -1575,17 +1579,24 @@ async function initGuardrails() {
   render();
 }
 
-// Fires Claude to generate domain-specific intents + personas.
+// Fires Claude to generate domain-specific intents.
 // Called early (at onboarding step 0) so results are ready by the time the user reaches step 1.
 // Uses a staleness token (S.domainCallFor) so stale responses are discarded if the domain changes.
-// Split into two calls so the loading screen clears as soon as intents are ready.
-// Personas are only needed at step 3 — they generate in background after intents resolve.
+// Personas used to be generated here too (domain-only, right after intents) — moved to
+// generatePersonas() below, fired once the user's actual intent is submitted in
+// generateScenarios(). Domain alone produces personas with no signal about what the bot
+// will actually be asked to do (e.g. a "Arsenal FC fan club" domain, with nothing else to
+// go on, naturally reads as a club-history/lore bot) and generateConversation() then
+// injects that persona text verbatim ahead of the scenario with nothing telling the model
+// the persona is voice/tone, not the task — so a mismatched persona reliably drags every
+// generated response toward whatever the persona claims to be about, regardless of what
+// the scenario actually needs answered. Seeing the submitted intent doesn't fix the second
+// part (persona still isn't scoped as "voice only"), but it does fix the mismatch itself.
 async function generateDomainContent(domain) {
   S.domainLoading = true;
   // Only render the loading state if we're already on step 1 — don't disrupt onboarding DOM
   if (S.step === 1) render();
 
-  // Call 1: intents only — small prompt, resolves fast, clears the loading screen
   const intentPrompt = `Generate 6 specific, realistic user intents for a ${domain} chatbot. Return ONLY a JSON array, no markdown:
 [{"id":"E1","text":"..."},{"id":"E2","text":"..."},{"id":"E3","text":"..."},{"id":"E4","text":"..."},{"id":"E5","text":"..."},{"id":"E6","text":"..."}]
 Each intent should be a concrete user goal (not generic filler).`;
@@ -1621,15 +1632,36 @@ Raw JSON only.`;
     S.domainLoading = false;
     if (S.step === 1) render();
   }
+}
 
-  // Call 2: personas — runs after intents, populates the persona selector at step 3.
-  // Falls back to default PERSONAS if this call fails or hasn't resolved yet.
-  const personaPrompt = `Generate 2 distinct bot persona types for a ${domain} chatbot. Return ONLY valid JSON, no markdown:
+// Fires Claude to generate 2 bot personas informed by the domain AND the intent the user
+// actually submitted. Called from generateScenarios() once S.submittedIntent is set — by
+// then there's a real task to anchor the personas to, and plenty of hidden latency before
+// step 3 (scenario generation + the user reviewing/editing scenarios at step 2) to resolve
+// behind. Falls back to default PERSONAS if this call fails or hasn't resolved yet.
+// Uses a staleness token (S.personaCallFor, keyed on domain+intent) so an older call can't
+// clobber personas for a newer submitted intent (e.g. the user hits Regenerate with a
+// different intent before the first call returns).
+async function generatePersonas(domain, intent) {
+  const callToken = domain + '::' + intent;
+  S.personaCallFor = callToken;
+
+  const personaPrompt = `Generate 2 distinct bot persona types for a ${domain} chatbot.
+
+Users will bring requests like: "${intent}". Use that only as a loose signal of the kind of things people come to this bot for — not as a brief to design either persona around. Follow these rules when building each persona:
+
+- Intent-as-hint, not intent-as-spec: the sample request tells you the flavor of asks this bot will field, not the bot's whole job. Don't narrow either persona down to just handling that one request.
+- Never a job title for the task: a persona's name and identity should never just restate what the sample request needs done (no "[Task] Finder", "[Task] Assistant", "[Task] Expert" naming patterns). The identity comes from the domain, not the task.
+- Domain-rooted identity: the persona's character, personality, and voice should feel like it belongs to this domain as a whole — who it is, not what one request needs it to do.
+- Broadly capable: each persona must genuinely be able to help with the sample request AND with other, different requests a user in this domain might bring — verify this before finalizing either persona.
+- Tone matches the domain, not the sample request: calibrate formality and personality to what the domain itself calls for (playful and informal for a casual fan community, measured and precise for something regulated or high-stakes, warm and reassuring for a support context, and so on) — the sample request's own tone shouldn't dictate this.
+
+Return ONLY valid JSON, no markdown:
 {"primary":{"name":"Bot name","tag":"Primary","text":"2-3 sentence persona instruction"},"secondary":{"name":"Bot name","tag":"Secondary","text":"2-3 sentence persona instruction"}}
-Make the two personas meaningfully different roles (e.g. for travel: Booking Assistant + Trip Advisor).`;
+The two personas must be meaningfully distinct from each other — different personalities and emphasis within the domain, not two phrasings of the same character — while both still following every rule above. E.g. for a travel domain: one persona built around brisk, get-it-done trip logistics, the other around a well-travelled friend who loves surfacing off-the-beaten-path finds — different emphasis and personality, but both still rooted in "travel" as an identity rather than named after a task.`;
   try {
     const personaResponse = await askClaude(personaPrompt);
-    if (S.domainCallFor !== domain) return;
+    if (S.personaCallFor !== callToken) return; // stale — a newer submitted intent has superseded this one
     const personas = parseJSON(personaResponse);
     if (personas && typeof personas === 'object') {
       S.domainPersonas = personas;
@@ -1641,10 +1673,10 @@ Make the two personas meaningfully different roles (e.g. for travel: Booking Ass
         S.personaTexts[k] = personas[k].text;
         S.personaNames[k] = personas[k].name;
       });
-      if (S.step !== 'onboarding') render();
+      render();
     }
   } catch(e) {
-    if (S.domainCallFor === domain) console.warn('Persona generation failed, using defaults:', e.message);
+    if (S.personaCallFor === callToken) console.warn('Persona generation failed, using defaults:', e.message);
   }
 }
 
@@ -2835,7 +2867,7 @@ function loadState() {
     S.pendingRule = null; S.capturedRule = null; S.tweak = '';
     S.showMaterials = false; S.replacingMat = null; S.previewMatId = null;
     S.copyDone = false; S.showCopyChooser = false; S.personaSaveToast = false;
-    S.showAddMaterial = false; S.domainLoading = false; S.domainCallFor = null; S.personaDirty = false;
+    S.showAddMaterial = false; S.domainLoading = false; S.domainCallFor = null; S.personaCallFor = null; S.personaDirty = false;
     S.showExportPanel = false;
     S.showGuardrailsReplace = false; S.previewGuardrails = false;
     // Migration: remove retired materials from saved sessions
